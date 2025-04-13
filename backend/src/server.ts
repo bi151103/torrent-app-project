@@ -52,34 +52,7 @@ const createWebSocketServer = (serverPort: number): void => {
       try {
         const message = JSON.parse(data.toString());
 
-        if (message.type === MessageType.FILE_UPLOAD && message.peerId && message.fileName && message.clientPort && message.pieceHashes) {
-          const expectedPort = serverPort - 2000;
-
-          if (message.clientPort !== expectedPort) {
-            ws.send(JSON.stringify({ type: MessageType.UPLOAD_FAIL, message: 'Invalid client port.' }));
-            return;
-          }
-
-          const fileName = message.fileName;
-
-          wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(JSON.stringify({
-                type: MessageType.FILE_CHUNKED,
-                fileName: fileName,
-                chunkSize: PIECE_SIZE,
-              }));
-            }
-          });
-
-          ws.send(JSON.stringify({
-            type: MessageType.UPLOAD_SUCCESS,
-            message: '',
-            fileName: fileName,
-            pieceSize: PIECE_SIZE,
-          }));
-        }
-        else if (message.type === MessageType.PEER_CONNECT && message.clientPeerInfo) {
+        if (message.type === MessageType.PEER_CONNECT && message.clientPeerInfo) {
           // Xử lý tin nhắn PEER_CONNECT
           const {peerId, peerIp, peerPort} = message.clientPeerInfo;
           // Lưu trữ kết nối WebSocket của peer
@@ -134,34 +107,6 @@ const createWebSocketServer = (serverPort: number): void => {
             }
           }
         }
-        // else if (message.type === MessageType.PIECE_DOWNLOAD && message.fileName && message.pieceIndex !== undefined) {
-        //   // Xử lý yêu cầu download piece cụ thể
-        //   const fileName = message.fileName;
-        //   const pieceIndex = message.pieceIndex;
-        //   const peerId = clientPeerInfo.peerId;
-      
-        //   if (!peerId) {
-        //     ws.send(JSON.stringify({ type: 'error', message: 'Peer ID not found' }));
-        //     return;
-        //   }
-      
-        //   const chunkPath = path.join(UPLOAD_DIR, peerId, 'chunks', fileName, `chunk_${pieceIndex}.bin`);
-      
-        //   fs.readFile(chunkPath, (err, chunkData) => {
-        //     if (err) {
-        //       console.error(`Error reading chunk ${pieceIndex} for ${fileName}:`, err);
-        //       ws.send(JSON.stringify({ type: 'error', message: `Chunk ${pieceIndex} not found for ${fileName}` }));
-        //       return;
-        //     }
-    
-        //     ws.send(JSON.stringify({ type: 'piece_info', pieceSize: chunkData.length, pieceIndex: pieceIndex, seedingPeer: { peerId: clientPeerInfo.peerId, peerIp: clientPeerInfo.peerIp, peerPort: clientPeerInfo.peerPort } }));
-    
-        //     for (let i = 0; i < chunkData.length; i += BLOCK_SIZE) {
-        //       const block = chunkData.slice(i, i + BLOCK_SIZE);
-        //       ws.send(JSON.stringify({ type: 'block_data', blockIndex: i / BLOCK_SIZE, blockData: { type: 'Buffer', data: Array.from(block) }, pieceIndex: pieceIndex }));
-        //     }
-        //   });
-        // }
         else if (message.type === MessageType.PIECE_DOWNLOAD && message.fileName && message.pieceIndex !== undefined) {
           // Xử lý yêu cầu download
           const fileName = message.fileName;
@@ -170,7 +115,6 @@ const createWebSocketServer = (serverPort: number): void => {
           const peerId = clientPeerInfo.peerId;
         
           if (!peerId) {
-            ws.send(JSON.stringify({ type: 'error', message: 'File not found' }));
             return;
           }
         
@@ -202,23 +146,23 @@ const createWebSocketServer = (serverPort: number): void => {
               return;
             }
         
-            ws.send(JSON.stringify({ type: 'piece_info', pieceSize: chunkData.length, pieceIndex: pieceIndex, seedingPeer: {peerId: clientPeerInfo.peerId, peerIp: clientPeerInfo.peerIp, peerPort: clientPeerInfo.peerPort} }));
+            ws.send(JSON.stringify({ type: MessageType.PIECE_INFO, pieceSize: chunkData.length, pieceIndex }));
         
             for (let i = 0; i < chunkData.length; i += BLOCK_SIZE) {
               const block = chunkData.slice(i, i + BLOCK_SIZE);
-              ws.send(JSON.stringify({ type: 'block_data', blockIndex: i / BLOCK_SIZE, blockData: { type: 'Buffer', data: Array.from(block) }, pieceIndex: pieceIndex }));
+              ws.send(JSON.stringify({ type: MessageType.BLOCK_DATA, blockIndex: i / BLOCK_SIZE, blockData: { type: 'Buffer', data: Array.from(block) }, pieceIndex }));
             }
           });
         }
         else if (message.type === MessageType.PIECE_UPLOAD && message.peerId && message.fileName && message.infoHash && message.pieceIndex !== undefined && message.pieceData) {
-          const peerId = clientPeerInfo.peerId;
+          const peerId = message.peerId;
           const fileName = message.fileName;
           const infoHash = message.infoHash;
           const pieceIndex = message.pieceIndex;
           const pieceDataBuffer = Buffer.from(message.pieceData);
           let isPieceUploadedSuccessfully = true;
 
-          if (peerId) {
+          if (peerId === clientPeerInfo.peerId) {
             const peerUploadDir = path.join(UPLOAD_DIR, peerId);
             // Tạo thư mục peer nếu chưa tồn tại
             if (!fs.existsSync(peerUploadDir)) {
@@ -273,14 +217,14 @@ const createWebSocketServer = (serverPort: number): void => {
               joinedTorrents[infoHash].bitfield[pieceIndex] = true;
               ws.send(JSON.stringify({
                 type: MessageType.UPLOAD_SUCCESS,
-                message: MessageType.UPLOAD_SUCCESS,
+                message: '',
                 fileName: fileName,
                 size: pieceDataBuffer.length,
                 blockSize: BLOCK_SIZE,
               }));
             }
             else {
-              ws.send(JSON.stringify({ type: MessageType.UPLOAD_FAIL, message: 'An error happens durring uploading process' }));
+              ws.send(JSON.stringify({ type: MessageType.UPLOAD_FAIL, message: 'An error happens during uploading process' }));
             }
           }
           else {
@@ -360,7 +304,7 @@ const createWebSocketServer = (serverPort: number): void => {
                         // console.log(pieceIndex);
                         ws.send(JSON.stringify({
                           type: MessageType.COMBINE_BLOCKS_SUCCESS,
-                          pieceIndex: pieceIndex,
+                          pieceIndex,
                           pieceData: Array.from(combinedPieceData), // Gửi dữ liệu dưới dạng mảng byte
                         }));
                       }

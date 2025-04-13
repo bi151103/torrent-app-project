@@ -80,17 +80,7 @@ const App: React.FC = () => {
       const peerServerWs = new WebSocket(`ws://localhost:${peerPort}`); // Kết nối WebSocket tới Server
   
       peerServerWs.onopen = () => {
-        peerServerWs.send(
-          JSON.stringify({
-            type: MessageType.FILE_UPLOAD,
-            peerId: peerId,
-            fileName: file.name,
-            clientPort: peerPort - 2000,
-            pieceHashes: pieceHashes,
-          })
-        );
-
-        peerServerWs.send(JSON.stringify({ type: MessageType.ADD_NEW_JOINED_TORRENTS, infoHash: infoHash, bitfieldLength: numPieces, isSeeder: true }));
+        peerServerWs.send(JSON.stringify({ type: MessageType.ADD_NEW_JOINED_TORRENTS, infoHash, bitfieldLength: numPieces, isSeeder: true }));
 
         let currentPieceIndex = 0;
 
@@ -105,8 +95,8 @@ const App: React.FC = () => {
                 peerServerWs.send(
                   JSON.stringify({
                     type: MessageType.PIECE_UPLOAD,
-                    peerId: peerId,
-                    infoHash: infoHash,
+                    peerId,
+                    infoHash,
                     fileName: file.name,
                     pieceIndex: currentPieceIndex,
                     pieceData: pieceDataArray,
@@ -162,25 +152,134 @@ const App: React.FC = () => {
         if (serverResponse.status === 200 && serverResponse.data.type === MessageType.PUBLISH_SUCCESS) {
           setPublishSuccessMessage("File uploaded successfully");
         } else {
+          setErrorMessage(serverResponse.data.message);
           console.error("File uploaded fail:", serverResponse);
-          setPublishSuccessMessage("File uploaded successfully");
         }
-      } catch (error) {
-        console.error("Error publishing torrent metadata:", error);
+      } catch (error: any) {
+        setErrorMessage(error.response.data.message);
+        console.error("Error publishing torrent metadata:", error.response.data.message);
       }
     }
   };   
 
   const handleFileDownload = async (infoHash: string) => {
-    const trackerWs = new WebSocket('ws://localhost:8001');
-    trackerWs.onopen = () => {
-      // Gửi peerId tới tracker
+    // const trackerWs = new WebSocket('ws://localhost:8001');
+    if (trackerWs && trackerWs.readyState == WebSocket.OPEN) {
       trackerWs.send(JSON.stringify({ type: MessageType.ANNOUNCE, peerId, infoHash, peerIp, peerPort, uploaded: 0, downloaded: 0, event: Event.STARTED}));
+    };
+  };
+
+  //thêm hàm handle Logout
+  const handleLogout = () => {
+    if (trackerWs && peerServerWs && trackerWs.readyState === WebSocket.OPEN && peerServerWs.readyState === WebSocket.OPEN && peerId) {
+      for (const infoHash in joinedTorrents) {
+        trackerWs.send(JSON.stringify({ type: MessageType.ANNOUNCE, peerId, infoHash, peerIp, peerPort, event: Event.STOPPED}));
+      }
+      peerServerWs.close();
+      setPeerServerWs(null);
+      setIsLoggedIn(false);
+    }
+  };
+
+  useEffect(() => {
+    // console.log(torrentMap);
+  }, [torrentMap]); // This will log whenever `torrentMap` changes
+
+  useEffect(() => {
+    joinedTorrentsRef.current = joinedTorrents;
+    // console.log(joinedTorrents);
+  }, [joinedTorrents]); // This will log whenever `joinedTorrents` changes
+ 
+  useEffect(() => {
+    const newPeerId = `peer-${Math.random().toString(36).substr(2, 9)}`;
+    setPeerId(newPeerId);
+    const currentPort = window.location.port ? parseInt(window.location.port) : 80;  // Giả sử mặc định là 80
+    setPeerPort(currentPort + 2000);  // Cộng thêm 2000 vào port hiện tại
+    getLocalIP().then(ip => setPeerIp(ip));
+
+    if (!trackerWsRef.current) { // Kiểm tra nếu trackerWs chưa được tạo
+      trackerWsRef.current = new WebSocket('ws://localhost:8001');
+      setTrackerWs(trackerWsRef.current);
+    }
+
+    const currentTrackerWs = trackerWsRef.current; // Lưu trữ tham chiếu cục bộ
+
+    if (currentTrackerWs) {
+      return () => {
+        // Cleanup function: đóng kết nối WebSocket cũ
+        if (currentTrackerWs.readyState === WebSocket.OPEN) {
+          currentTrackerWs.close();
+        }
+      };
+    }
+  }, []);
+
+  useEffect(() => {
+    if (trackerWs && isLoggedIn && peerId && peerIp && peerPort) {
+      const newPeerServerWs = new WebSocket(`ws://localhost:${peerPort}`);
+      
+      newPeerServerWs.onopen = () => {
+        setPeerServerWs(newPeerServerWs);
+        // Gửi peerId tới server peerPort
+        newPeerServerWs.send(JSON.stringify({ type: MessageType.PEER_CONNECT, clientPeerInfo: {peerId, peerIp, peerPort }}));
+      };
+
+      trackerWs.send(JSON.stringify({ type: MessageType.GET_FILES, peerId, peerIp, peerPort: (peerPort ? peerPort - 2000 : peerPort) }));
+
+      return () => {
+        if (newPeerServerWs && newPeerServerWs.readyState === WebSocket.OPEN) {
+          newPeerServerWs.close();
+        }
+      };
+    }
+  }, [trackerWs, peerId, peerIp, peerPort, isLoggedIn]);
+
+  useEffect(() => {
+    if (trackerWs) {
       trackerWs.onmessage = (message) => {
         const data = JSON.parse(message.data);
-        
-        if (data.type === MessageType.STARTED_SUCCESS) {
+  
+        if (data.type === MessageType.REGISTER_SUCCESS) {
+          setErrorMessage(data.message);
+          setIsRegistering(false); // Chuyển về form đăng nhập sau khi đăng ký thành công
+        } else if (data.type === MessageType.REGISTER_FAIL) {
+          setErrorMessage(data.message);
+        } else if (data.type === MessageType.LOGIN_SUCCESS) {
+          setIsLoggedIn(true);
+        } else if (data.type === MessageType.LOGIN_FAIL) {
+          setErrorMessage(data.message);
+        } else if (data.type === MessageType.TORRENT_MAP) {
+          // Chuyển đổi data.torrentMap thành các đối tượng Torrent
+          const transformedTorrentMap: Record<string, Torrent> = Object.keys(data.torrentMap).reduce((acc, infoHash) => {
+            const torrentData = data.torrentMap[infoHash];
+            
+            // Tạo một đối tượng Torrent từ dữ liệu
+            const torrent = new Torrent(
+              torrentData.infoHash,
+              torrentData.files.map((file: { fileName: string; fileSize: number; pieces: any[] }) => ({
+                name: file.fileName,
+                size: file.fileSize,
+                pieceHashes: file.pieces.map(piece => piece.hash),  // Chỉ lấy hash của các phần trong file
+              })),
+              torrentData.torrentPeers.map((peer: { uploaded: number; downloaded: number; peerId: string; isSeeder: boolean; isLeeching: boolean, peerIp: string, peerPort: number }) => ({
+                peerId: peer.peerId,
+                uploaded: peer.uploaded,
+                downloaded: peer.downloaded,
+                isSeeder: peer.isSeeder,
+                isLeeching: peer.isLeeching,
+                peerIp: peer.peerIp,
+                peerPort: peer.peerPort
+              }))
+            );
+      
+            acc[infoHash] = torrent;
+            return acc;
+          }, {} as Record<string, Torrent>);
+      
+          setTorrentMap(transformedTorrentMap);
+        } else if (data.type === MessageType.STARTED_SUCCESS) {
           const torrentData = data.torrent;
+          const infoHash = data.infoHash;
     
           // Chuyển đổi dữ liệu torrentPeers thành mảng TorrentPeer
           const torrentPeers = torrentData.torrentPeers.map(
@@ -250,9 +349,6 @@ const App: React.FC = () => {
 
           const fileName = torrent.getFiles()[0].fileName;
           const fileSize = torrent.getFiles()[0].fileSize;
-          // console.log('infoHash: ', infoHash ,', fileSize: ', fileSize);
-
-          // console.log(torrent);
 
           const peers = torrent.torrentPeers || []
 
@@ -274,7 +370,7 @@ const App: React.FC = () => {
                   newPeerServerWs.send(JSON.stringify({
                     type: MessageType.HANDSHAKE,
                     infoHash: torrent.getInfoHash(),
-                    peerId: peerId,
+                    peerId,
                   }));
     
                   newPeerServerWs.onmessage = async (message) => {
@@ -340,7 +436,7 @@ const App: React.FC = () => {
               const newPeerServerWss = seedingPeerWs[pieceIndex];
               if (newPeerServerWss) {
                 const newPeerServerWs = newPeerServerWss.webSocket;
-                newPeerServerWs.send(JSON.stringify({ type: MessageType.PIECE_DOWNLOAD, fileName, pieceIndex: pieceIndex }));
+                newPeerServerWs.send(JSON.stringify({ type: MessageType.PIECE_DOWNLOAD, fileName, pieceIndex }));
 
                 const receivedPieces: Record<number, Uint8Array> = {};
                 const pieceSizes: Record<number, number> = {};
@@ -357,14 +453,14 @@ const App: React.FC = () => {
 
                     await new Promise(resolve => setTimeout(resolve, 10000));
 
-                    if (data.type === "piece_info") {
+                    if (data.type === MessageType.PIECE_INFO) {
                       pieceSizes[data.pieceIndex] = data.pieceSize;
                       receivedPieces[data.pieceIndex] = new Uint8Array(data.pieceSize);
                       const blockCount = Math.ceil(data.pieceSize / (16 * 1024));
                       receivedBlockFlags[data.pieceIndex] = new Array(blockCount).fill(false);
                     }
 
-                    if (data.type === "block_data") {
+                    if (data.type === MessageType.BLOCK_DATA) {
                       if (!pieceSizes[data.pieceIndex]) {
                         console.warn(`Received block_data for piece ${data.pieceIndex} before piece_info.`);
                         return;
@@ -391,9 +487,9 @@ const App: React.FC = () => {
                           if (peerServerWs && peerServerWs.readyState === WebSocket.OPEN) {
                             peerServerWs.send(JSON.stringify({
                               type: MessageType.PIECE_UPLOAD,
-                              peerId: peerId,
-                              infoHash: infoHash,
-                              fileName: fileName,
+                              peerId,
+                              infoHash,
+                              fileName,
                               pieceIndex: data.pieceIndex,
                               pieceData: Array.from(receivedPieces[data.pieceIndex]),
                             }));
@@ -410,11 +506,11 @@ const App: React.FC = () => {
                           }));
 
                           if (peerServerWs && peerServerWs.readyState === WebSocket.OPEN) {
-                            peerServerWs.send(JSON.stringify({ type: MessageType.UPDATE_JOINED_TORRENTS, infoHash: infoHash, downloaded: pieceSizes[data.pieceIndex] }));
+                            peerServerWs.send(JSON.stringify({ type: MessageType.UPDATE_JOINED_TORRENTS, infoHash, downloaded: pieceSizes[data.pieceIndex] }));
                           }
 
                           if (newPeerServerWs && newPeerServerWs.readyState === WebSocket.OPEN) {
-                            newPeerServerWs.send(JSON.stringify({ type: MessageType.UPDATE_JOINED_TORRENTS, infoHash: infoHash, uploaded: pieceSizes[data.pieceIndex] }));
+                            newPeerServerWs.send(JSON.stringify({ type: MessageType.UPDATE_JOINED_TORRENTS, infoHash, uploaded: pieceSizes[data.pieceIndex] }));
                           }
 
                           if (numberOfReceivedValidPiece === torrent.getFiles()[0].pieces.length) {
@@ -423,9 +519,9 @@ const App: React.FC = () => {
                               if (peerServerWs && peerServerWs.readyState === WebSocket.OPEN) {
                                 peerServerWs.send(JSON.stringify({
                                   type: MessageType.COMBINE_PIECES,
-                                  peerId: peerId,
-                                  infoHash: infoHash,
-                                  fileName: fileName,
+                                  peerId,
+                                  infoHash,
+                                  fileName,
                                 }));
                               }
                             }, 5000);
@@ -456,123 +552,6 @@ const App: React.FC = () => {
             });
           });
         } else if (data.type === MessageType.STARTED_FAIL) {
-          setErrorMessage(data.message);
-        }
-      };
-    };
-  };
-
-  //thêm hàm handle Logout
-  const handleLogout = () => {
-    if (trackerWs && peerServerWs && trackerWs.readyState === WebSocket.OPEN && peerServerWs.readyState === WebSocket.OPEN && peerId) {
-      for (const infoHash in joinedTorrents) {
-        trackerWs.send(JSON.stringify({ type: MessageType.ANNOUNCE, peerId, infoHash, peerIp, peerPort, uploaded: joinedTorrents[infoHash].uploaded, downloaded: joinedTorrents[infoHash].downloaded, event: Event.STOPPED}));
-      }
-      peerServerWs.close();
-      setPeerServerWs(null);
-      setIsLoggedIn(false);
-    }
-  };
-
-  useEffect(() => {
-    // console.log(torrentMap);
-  }, [torrentMap]); // This will log whenever `torrentMap` changes
-
-  useEffect(() => {
-    joinedTorrentsRef.current = joinedTorrents;
-    // console.log(joinedTorrents);
-  }, [joinedTorrents]); // This will log whenever `joinedTorrents` changes
- 
-  useEffect(() => {
-    const newPeerId = `peer-${Math.random().toString(36).substr(2, 9)}`;
-    setPeerId(newPeerId);
-    const currentPort = window.location.port ? parseInt(window.location.port) : 80;  // Giả sử mặc định là 80
-    setPeerPort(currentPort + 2000);  // Cộng thêm 2000 vào port hiện tại
-    getLocalIP().then(ip => setPeerIp(ip));
-
-    if (!trackerWsRef.current) { // Kiểm tra nếu trackerWs chưa được tạo
-      trackerWsRef.current = new WebSocket('ws://localhost:8001');
-      setTrackerWs(trackerWsRef.current);
-    }
-
-    const currentTrackerWs = trackerWsRef.current; // Lưu trữ tham chiếu cục bộ
-
-    if (currentTrackerWs) {
-      return () => {
-        // Cleanup function: đóng kết nối WebSocket cũ
-        if (currentTrackerWs.readyState === WebSocket.OPEN) {
-          currentTrackerWs.close();
-        }
-      };
-    }
-  }, []);
-
-  useEffect(() => {
-    if (trackerWs && isLoggedIn && peerId && peerIp && peerPort) {
-      const newPeerServerWs = new WebSocket(`ws://localhost:${peerPort}`);
-
-      setPeerServerWs(newPeerServerWs);
-
-      newPeerServerWs.onopen = () => {
-        // Gửi peerId tới server peerPort
-        newPeerServerWs.send(JSON.stringify({ type: MessageType.PEER_CONNECT, clientPeerInfo: {peerId, peerIp, peerPort }}));
-      };
-
-      trackerWs.send(JSON.stringify({ type: MessageType.GET_FILES, peerId, peerIp: peerIp, peerPort: (peerPort ? peerPort - 2000 : peerPort) }));
-
-      return () => {
-        if (newPeerServerWs && newPeerServerWs.readyState === WebSocket.OPEN) {
-          newPeerServerWs.close();
-        }
-      };
-    }
-  }, [trackerWs, peerId, peerIp, peerPort, isLoggedIn]);
-
-  useEffect(() => {
-    if (trackerWs) {
-      trackerWs.onmessage = (message) => {
-        const data = JSON.parse(message.data);
-  
-        if (data.type === MessageType.REGISTER_SUCCESS) {
-          setErrorMessage(data.message);
-          setIsRegistering(false); // Chuyển về form đăng nhập sau khi đăng ký thành công
-        } else if (data.type === MessageType.REGISTER_FAIL) {
-          setErrorMessage(data.message);
-        } else if (data.type === MessageType.LOGIN_SUCCESS) {
-          setIsLoggedIn(true);
-        } else if (data.type === MessageType.LOGIN_FAIL) {
-          setErrorMessage(data.message);
-        } else if (data.type === MessageType.TORRENT_MAP) {
-          // Chuyển đổi data.torrentMap thành các đối tượng Torrent
-          const transformedTorrentMap: Record<string, Torrent> = Object.keys(data.torrentMap).reduce((acc, infoHash) => {
-            const torrentData = data.torrentMap[infoHash];
-            
-            // Tạo một đối tượng Torrent từ dữ liệu
-            const torrent = new Torrent(
-              torrentData.infoHash,
-              torrentData.files.map((file: { fileName: string; fileSize: number; pieces: any[] }) => ({
-                name: file.fileName,
-                size: file.fileSize,
-                pieceHashes: file.pieces.map(piece => piece.hash),  // Chỉ lấy hash của các phần trong file
-              })),
-              torrentData.torrentPeers.map((peer: { uploaded: number; downloaded: number; peerId: string; isSeeder: boolean; isLeeching: boolean, peerIp: string, peerPort: number }) => ({
-                peerId: peer.peerId,
-                uploaded: peer.uploaded,
-                downloaded: peer.downloaded,
-                isSeeder: peer.isSeeder,
-                isLeeching: peer.isLeeching,
-                peerIp: peer.peerIp,
-                peerPort: peer.peerPort
-              }))
-            );
-      
-            acc[infoHash] = torrent;
-            return acc;
-          }, {} as Record<string, Torrent>);
-      
-          setTorrentMap(transformedTorrentMap);
-        } else if (data.type === MessageType.STARTED_SUCCESS) {
-        } else if (data.type === MessageType.STARTED_FAIL) {
         } else if (data.type === MessageType.COMPLETED_SUCCESS) {
         } else if (data.type === MessageType.COMPLETED_FAIL) {
         } else if (data.type === MessageType.STOPPED_SUCCESS) {
@@ -584,7 +563,7 @@ const App: React.FC = () => {
         }
       };
     }
-  }, [trackerWs]);
+  }, [trackerWs, peerServerWs]);
 
   useEffect(() => {
     if (peerServerWs) {

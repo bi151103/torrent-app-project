@@ -6,8 +6,4 @@ export class Piece {
     public hash: string,
     public size: number
   ) {}
-
-  markAsDownloaded() {
-    this.isDownloaded = true;
-  }
 }

@@ -80,7 +80,7 @@ app.post('/' + MessageType.PUBLISH, (req, res) => {
       type: MessageType.PUBLISH_SUCCESS,
       message: 'Torrent published successfully.',
       fileName,
-      size: fileSize,
+      fileSize,
       pieceHashes,
     });
   } catch (error) {
@@ -149,7 +149,8 @@ wss.on('connection', (ws) => {
           const peerIp = data.peerIp;
           const peerPort = data.peerPort;
           const uploaded = data.uploaded;
-          const torrent = torrentMap[data.infoHash];
+          const infoHash = data.infoHash;
+          const torrent = torrentMap[infoHash];
           if (torrent) {
             const peerExists = torrent.torrentPeers.some(peer => peer.peerId === peerId);
             if (!peerExists) {
@@ -170,7 +171,7 @@ wss.on('connection', (ws) => {
                 }
               });
             }
-            ws.send(JSON.stringify({ type: MessageType.STARTED_SUCCESS, message: '', torrent}));
+            ws.send(JSON.stringify({ type: MessageType.STARTED_SUCCESS, message: '', torrent, infoHash }));
           } else {
             ws.send(JSON.stringify({ type: MessageType.STARTED_FAIL, message: 'No torrent was found with provided infohash' }));
           }
@@ -180,20 +181,9 @@ wss.on('connection', (ws) => {
           const peerId = data.peerId;
           const peerIp = data.peerIp;
           const peerPort = data.peerPort;
-          // const downloaded = data.downloaded;
-          // const { seedingPeerId, seedingPeerIp, seedingPeerPort } = data.seedingPeerInfo;
-          // for (const infoHash in torrentMap) {
-          //   for (const torrentPeer of torrentMap[infoHash].torrentPeers) {
-          //     if (torrentPeer.getPeerId() === seedingPeerId && torrentPeer.peerIp === seedingPeerIp && torrentPeer.peerPort === seedingPeerPort) {
-          //       torrentPeer.uploaded += downloaded;
-          //       break;
-          //     }
-          //   }
-          // }
           for (const infoHash in torrentMap) {
             for (const torrentPeer of torrentMap[infoHash].torrentPeers) {
               if (torrentPeer.getPeerId() === peerId && torrentPeer.peerIp === peerIp && torrentPeer.peerPort === peerPort) {
-                // torrentPeer.downloaded = downloaded;
                 torrentPeer.isLeeching = false;
                 torrentPeer.isSeeder = true;
                 isPeerFound = true;
